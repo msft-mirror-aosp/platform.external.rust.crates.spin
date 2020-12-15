@@ -2,15 +2,22 @@ diff --git a/Android.bp b/Android.bp
 index 96531ab..43db8ef 100644
 --- a/Android.bp
 +++ b/Android.bp
-@@ -8,6 +8,7 @@ rust_library {
+@@ -8,8 +8,14 @@ rust_library {
      edition: "2015",
      features: [
          "default",
 +        "std",
          "ticket_mutex",
      ],
++    apex_available: [
++        "//apex_available:platform",
++        "com.android.resolv",
++    ],
++    min_sdk_version: "29",
  }
-@@ -21,6 +22,7 @@ rust_defaults {
+ 
+ rust_defaults {
+@@ -21,6 +27,7 @@ rust_defaults {
      edition: "2015",
      features: [
          "default",
