@@ -11,6 +11,11 @@ rust_library {
         "std",
         "ticket_mutex",
     ],
+    apex_available: [
+        "//apex_available:platform",
+        "com.android.resolv",
+    ],
+    min_sdk_version: "29",
 }
 
 rust_defaults {
