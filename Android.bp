@@ -2,6 +2,7 @@
 
 rust_library {
     name: "libspin",
+    // has rustc warnings
     host_supported: true,
     crate_name: "spin",
     srcs: ["src/lib.rs"],
@@ -21,6 +22,7 @@ rust_library {
 rust_defaults {
     name: "spin_defaults",
     crate_name: "spin",
+    // has rustc warnings
     srcs: ["src/lib.rs"],
     test_suites: ["general-tests"],
     auto_gen_config: true,
@@ -35,6 +37,9 @@ rust_defaults {
 rust_test_host {
     name: "spin_host_test_src_lib",
     defaults: ["spin_defaults"],
+    test_options: {
+        unit_test: true,
+    },
 }
 
 rust_test {
