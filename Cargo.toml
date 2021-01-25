@@ -12,7 +12,7 @@
 
 [package]
 name = "spin"
-version = "0.7.0"
+version = "0.7.1"
 authors = ["Mathijs van de Nes <git@mathijs.vd-nes.nl>", "John Ericson <git@JohnEricson.me>", "Joshua Barretto <joshua.s.barretto@gmail.com>"]
 description = "Spin-based synchronization primitives"
 keywords = ["spinlock", "mutex", "rwlock"]
