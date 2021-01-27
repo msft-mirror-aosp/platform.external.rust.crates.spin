@@ -428,6 +428,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Android uses panic_abort"]
     fn test_mutex_arc_access_in_unwind() {
         let arc = Arc::new(TicketMutex::new(1));
         let arc2 = arc.clone();
