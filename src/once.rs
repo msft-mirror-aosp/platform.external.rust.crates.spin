@@ -384,6 +384,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Android uses panic_abort"]
     fn panic() {
         use ::std::panic;
 
