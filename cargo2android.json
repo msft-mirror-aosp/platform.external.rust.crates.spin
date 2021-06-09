@@ -5,8 +5,8 @@
   ],
   "dependencies": true,
   "device": true,
+  "features": "default,std",
   "min-sdk-version": "29",
-  "patch": "patches/Android.bp.patch",
   "run": true,
   "tests": true
 }
