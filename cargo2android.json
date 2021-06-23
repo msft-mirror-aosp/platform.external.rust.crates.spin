@@ -6,7 +6,7 @@
   ],
   "dependencies": true,
   "device": true,
-  "features": "default,std",
+  "features": "once,std",
   "min-sdk-version": "29",
   "run": true,
   "tests": true
