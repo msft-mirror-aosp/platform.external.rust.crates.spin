@@ -33,15 +33,13 @@ license {
 
 rust_library {
     name: "libspin",
-    // has rustc warnings
     host_supported: true,
     crate_name: "spin",
     srcs: ["src/lib.rs"],
     edition: "2015",
     features: [
-        "default",
+        "once",
         "std",
-        "ticket_mutex",
     ],
     apex_available: [
         "//apex_available:platform",
@@ -54,15 +52,13 @@ rust_library {
 rust_defaults {
     name: "spin_defaults",
     crate_name: "spin",
-    // has rustc warnings
     srcs: ["src/lib.rs"],
     test_suites: ["general-tests"],
     auto_gen_config: true,
     edition: "2015",
     features: [
-        "default",
+        "once",
         "std",
-        "ticket_mutex",
     ],
 }
 
