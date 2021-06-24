@@ -1,17 +1,19 @@
-//! Synchronization primitives for one-time evaluation.
+    //! Synchronization primitives for one-time evaluation.
 
 use core::{
     cell::UnsafeCell,
     mem::MaybeUninit,
     sync::atomic::{AtomicUsize, Ordering},
+    marker::PhantomData,
     fmt,
 };
+use crate::{RelaxStrategy, Spin};
 
 /// A primitive that provides lazy one-time initialization.
 ///
 /// Unlike its `std::sync` equivalent, this is generalized such that the closure returns a
 /// value to be stored by the [`Once`] (`std::sync::Once` can be trivially emulated with
-/// `Once<()>`).
+/// `Once`).
 ///
 /// Because [`Once::new`] is `const`, this primitive may be used to safely initialize statics.
 ///
@@ -20,18 +22,19 @@ use core::{
 /// ```
 /// use spin;
 ///
-/// static START: spin::Once<()> = spin::Once::new();
+/// static START: spin::Once = spin::Once::new();
 ///
 /// START.call_once(|| {
 ///     // run initialization here
 /// });
 /// ```
-pub struct Once<T> {
+pub struct Once<T = (), R = Spin> {
+    phantom: PhantomData<R>,
     state: AtomicUsize,
     data: UnsafeCell<MaybeUninit<T>>,
 }
 
-impl<T: fmt::Debug> fmt::Debug for Once<T> {
+impl<T: fmt::Debug, R> fmt::Debug for Once<T, R> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.get() {
             Some(s) => write!(f, "Once {{ data: ")
@@ -44,8 +47,8 @@ impl<T: fmt::Debug> fmt::Debug for Once<T> {
 
 // Same unsafe impls as `std::sync::RwLock`, because this also allows for
 // concurrent reads.
-unsafe impl<T: Send + Sync> Sync for Once<T> {}
-unsafe impl<T: Send> Send for Once<T> {}
+unsafe impl<T: Send + Sync, R> Sync for Once<T, R> {}
+unsafe impl<T: Send, R> Send for Once<T, R> {}
 
 // Four states that a Once can be in, encoded into the lower bits of `state` in
 // the Once structure.
@@ -56,51 +59,7 @@ const PANICKED: usize = 0x3;
 
 use core::hint::unreachable_unchecked as unreachable;
 
-impl<T> Once<T> {
-    /// Initialization constant of [`Once`].
-    #[allow(clippy::declare_interior_mutable_const)]
-    pub const INIT: Self = Self {
-        state: AtomicUsize::new(INCOMPLETE),
-        data: UnsafeCell::new(MaybeUninit::uninit()),
-    };
-
-    /// Creates a new [`Once`].
-    pub const fn new() -> Once<T> {
-        Self::INIT
-    }
-
-    /// Creates a new initialized [`Once`].
-    pub const fn initialized(data: T) -> Once<T> {
-        Self {
-            state: AtomicUsize::new(COMPLETE),
-            data: UnsafeCell::new(MaybeUninit::new(data)),
-        }
-    }
-
-    /// Get a reference to the initialized instance. Must only be called once COMPLETE.
-    unsafe fn force_get(&self) -> &T {
-        // SAFETY:
-        // * `UnsafeCell`/inner deref: data never changes again
-        // * `MaybeUninit`/outer deref: data was initialized
-        &*(*self.data.get()).as_ptr()
-    }
-
-    /// Get a reference to the initialized instance. Must only be called once COMPLETE.
-    unsafe fn force_get_mut(&mut self) -> &mut T {
-        // SAFETY:
-        // * `UnsafeCell`/inner deref: data never changes again
-        // * `MaybeUninit`/outer deref: data was initialized
-        &mut *(*self.data.get()).as_mut_ptr()
-    }
-
-    /// Get a reference to the initialized instance. Must only be called once COMPLETE.
-    unsafe fn force_into_inner(self) -> T {
-        // SAFETY:
-        // * `UnsafeCell`/inner deref: data never changes again
-        // * `MaybeUninit`/outer deref: data was initialized
-        (*self.data.get()).as_ptr().read()
-    }
-
+impl<T, R: RelaxStrategy> Once<T, R> {
     /// Performs an initialization routine once and only once. The given closure
     /// will be executed if this is the first time `call_once` has been called,
     /// and otherwise the routine will *not* be invoked.
@@ -139,11 +98,12 @@ impl<T> Once<T> {
         let mut status = self.state.load(Ordering::SeqCst);
 
         if status == INCOMPLETE {
-            status = self.state.compare_and_swap(
+            status = self.state.compare_exchange(
                 INCOMPLETE,
                 RUNNING,
                 Ordering::SeqCst,
-            );
+                Ordering::SeqCst,
+            ).unwrap_or_else(|x| x);
 
             if status == INCOMPLETE { // We init
                 // We use a guard (Finish) to catch panics caused by builder
@@ -170,41 +130,6 @@ impl<T> Once<T> {
             .unwrap_or_else(|| unreachable!("Encountered INCOMPLETE when polling Once"))
     }
 
-    /// Returns a reference to the inner value if the [`Once`] has been initialized.
-    pub fn get(&self) -> Option<&T> {
-        match self.state.load(Ordering::SeqCst) {
-            COMPLETE => Some(unsafe { self.force_get() }),
-            _ => None,
-        }
-    }
-
-    /// Returns a mutable reference to the inner value if the [`Once`] has been initialized.
-    ///
-    /// Because this method requires a mutable reference to the [`Once`], no synchronization
-    /// overhead is required to access the inner value. In effect, it is zero-cost.
-    pub fn get_mut(&mut self) -> Option<&mut T> {
-        match *self.state.get_mut() {
-            COMPLETE => Some(unsafe { self.force_get_mut() }),
-            _ => None,
-        }
-    }
-
-    /// Returns a the inner value if the [`Once`] has been initialized.
-    ///
-    /// Because this method requires ownershup of the [`Once`], no synchronization overhead
-    /// is required to access the inner value. In effect, it is zero-cost.
-    pub fn try_into_inner(mut self) -> Option<T> {
-        match *self.state.get_mut() {
-            COMPLETE => Some(unsafe { self.force_into_inner() }),
-            _ => None,
-        }
-    }
-
-    /// Returns a reference to the inner value if the [`Once`] has been initialized.
-    pub fn is_completed(&self) -> bool {
-        self.state.load(Ordering::SeqCst) == COMPLETE
-    }
-
     /// Spins until the [`Once`] contains a value.
     ///
     /// Note that in releases prior to `0.7`, this function had the behaviour of [`Once::poll`].
@@ -218,7 +143,7 @@ impl<T> Once<T> {
         loop {
             match self.poll() {
                 Some(x) => break x,
-                None => crate::relax(),
+                None => R::relax(),
             }
         }
     }
@@ -237,7 +162,7 @@ impl<T> Once<T> {
         loop {
             match self.state.load(Ordering::SeqCst) {
                 INCOMPLETE => return None,
-                RUNNING => crate::relax(), // We spin
+                RUNNING => R::relax(), // We spin
                 COMPLETE => return Some(unsafe { self.force_get() }),
                 PANICKED => panic!("Once previously poisoned by a panicked"),
                 _ => unsafe { unreachable() },
@@ -246,13 +171,124 @@ impl<T> Once<T> {
     }
 }
 
-impl<T> From<T> for Once<T> {
+impl<T, R> Once<T, R> {
+    /// Initialization constant of [`Once`].
+    #[allow(clippy::declare_interior_mutable_const)]
+    pub const INIT: Self = Self {
+        phantom: PhantomData,
+        state: AtomicUsize::new(INCOMPLETE),
+        data: UnsafeCell::new(MaybeUninit::uninit()),
+    };
+
+    /// Creates a new [`Once`].
+    pub const fn new() -> Self{
+        Self::INIT
+    }
+
+    /// Creates a new initialized [`Once`].
+    pub const fn initialized(data: T) -> Self {
+        Self {
+            phantom: PhantomData,
+            state: AtomicUsize::new(COMPLETE),
+            data: UnsafeCell::new(MaybeUninit::new(data)),
+        }
+    }
+
+    /// Retrieve a pointer to the inner data.
+    ///
+    /// While this method itself is safe, accessing the pointer before the [`Once`] has been
+    /// initialized is UB, unless this method has already been written to from a pointer coming
+    /// from this method.
+    pub fn as_mut_ptr(&self) -> *mut T {
+        // SAFETY:
+        // * MaybeUninit<T> always has exactly the same layout as T
+        self.data.get().cast::<T>()
+    }
+
+    /// Get a reference to the initialized instance. Must only be called once COMPLETE.
+    unsafe fn force_get(&self) -> &T {
+        // SAFETY:
+        // * `UnsafeCell`/inner deref: data never changes again
+        // * `MaybeUninit`/outer deref: data was initialized
+        &*(*self.data.get()).as_ptr()
+    }
+
+    /// Get a reference to the initialized instance. Must only be called once COMPLETE.
+    unsafe fn force_get_mut(&mut self) -> &mut T {
+        // SAFETY:
+        // * `UnsafeCell`/inner deref: data never changes again
+        // * `MaybeUninit`/outer deref: data was initialized
+        &mut *(*self.data.get()).as_mut_ptr()
+    }
+
+    /// Get a reference to the initialized instance. Must only be called once COMPLETE.
+    unsafe fn force_into_inner(self) -> T {
+        // SAFETY:
+        // * `UnsafeCell`/inner deref: data never changes again
+        // * `MaybeUninit`/outer deref: data was initialized
+        (*self.data.get()).as_ptr().read()
+    }
+
+    /// Returns a reference to the inner value if the [`Once`] has been initialized.
+    pub fn get(&self) -> Option<&T> {
+        match self.state.load(Ordering::SeqCst) {
+            COMPLETE => Some(unsafe { self.force_get() }),
+            _ => None,
+        }
+    }
+
+    /// Returns a reference to the inner value on the unchecked assumption that the  [`Once`] has been initialized.
+    ///
+    /// # Safety
+    ///
+    /// This is *extremely* unsafe if the `Once` has not already been initialized because a reference to uninitialized
+    /// memory will be returned, immediately triggering undefined behaviour (even if the reference goes unused).
+    /// However, this can be useful in some instances for exposing the `Once` to FFI or when the overhead of atomically
+    /// checking initialization is unacceptable and the `Once` has already been initialized.
+    pub unsafe fn get_unchecked(&self) -> &T {
+        debug_assert_eq!(
+            self.state.load(Ordering::SeqCst),
+            COMPLETE,
+            "Attempted to access an uninitialized Once. If this was run without debug checks, this would be undefined behaviour. This is a serious bug and you must fix it.",
+        );
+        self.force_get()
+    }
+
+    /// Returns a mutable reference to the inner value if the [`Once`] has been initialized.
+    ///
+    /// Because this method requires a mutable reference to the [`Once`], no synchronization
+    /// overhead is required to access the inner value. In effect, it is zero-cost.
+    pub fn get_mut(&mut self) -> Option<&mut T> {
+        match *self.state.get_mut() {
+            COMPLETE => Some(unsafe { self.force_get_mut() }),
+            _ => None,
+        }
+    }
+
+    /// Returns a the inner value if the [`Once`] has been initialized.
+    ///
+    /// Because this method requires ownership of the [`Once`], no synchronization overhead
+    /// is required to access the inner value. In effect, it is zero-cost.
+    pub fn try_into_inner(mut self) -> Option<T> {
+        match *self.state.get_mut() {
+            COMPLETE => Some(unsafe { self.force_into_inner() }),
+            _ => None,
+        }
+    }
+
+    /// Returns a reference to the inner value if the [`Once`] has been initialized.
+    pub fn is_completed(&self) -> bool {
+        self.state.load(Ordering::SeqCst) == COMPLETE
+    }
+}
+
+impl<T, R> From<T> for Once<T, R> {
     fn from(data: T) -> Self {
         Self::initialized(data)
     }
 }
 
-impl<T> Drop for Once<T> {
+impl<T, R> Drop for Once<T, R> {
     fn drop(&mut self) {
         if self.state.load(Ordering::SeqCst) == COMPLETE {
             unsafe {
@@ -282,11 +318,12 @@ mod tests {
 
     use std::sync::mpsc::channel;
     use std::thread;
-    use super::Once;
+
+    use super::*;
 
     #[test]
     fn smoke_once() {
-        static O: Once<()> = Once::new();
+        static O: Once = Once::new();
         let mut a = 0;
         O.call_once(|| a += 1);
         assert_eq!(a, 1);
@@ -305,7 +342,7 @@ mod tests {
 
     #[test]
     fn stampede_once() {
-        static O: Once<()> = Once::new();
+        static O: Once = Once::new();
         static mut RUN: bool = false;
 
         let (tx, rx) = channel();
@@ -388,7 +425,7 @@ mod tests {
     fn panic() {
         use ::std::panic;
 
-        static INIT: Once<()> = Once::new();
+        static INIT: Once = Once::new();
 
         // poison the once
         let t = panic::catch_unwind(|| {
@@ -405,7 +442,7 @@ mod tests {
 
     #[test]
     fn init_constant() {
-        static O: Once<()> = Once::INIT;
+        static O: Once = Once::INIT;
         let mut a = 0;
         O.call_once(|| a += 1);
         assert_eq!(a, 1);
@@ -426,13 +463,13 @@ mod tests {
     }
 
     #[test]
-    fn drop() {
+    fn drop_occurs() {
         unsafe {
             CALLED = false;
         }
 
         {
-            let once = Once::new();
+            let once = Once::<_>::new();
             once.call_once(|| DropTest {});
         }
 
@@ -447,9 +484,8 @@ mod tests {
             CALLED = false;
         }
 
-        {
-            let once = Once::<DropTest>::new();
-        }
+        let once = Once::<DropTest>::new();
+        drop(once);
 
         assert!(unsafe {
             !CALLED
