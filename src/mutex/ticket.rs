@@ -1,18 +1,9 @@
-//! A ticket-based mutex.
-//!
-//! Waiting threads take a 'ticket' from the lock in the order they arrive and gain access to the lock when their
-//! ticket is next in the queue. Best-case latency is slightly worse than a regular spinning mutex, but worse-case
-//! latency is infinitely better. Waiting threads simply need to wait for all threads that come before them in the
-//! queue to finish.
-
 use core::{
     cell::UnsafeCell,
     fmt,
     ops::{Deref, DerefMut},
     sync::atomic::{AtomicUsize, Ordering},
-    marker::PhantomData,
 };
-use crate::{RelaxStrategy, Spin};
 
 /// A spin-based [ticket lock](https://en.wikipedia.org/wiki/Ticket_lock) providing mutually exclusive access to data.
 ///
@@ -28,7 +19,7 @@ use crate::{RelaxStrategy, Spin};
 /// ```
 /// use spin;
 ///
-/// let lock = spin::mutex::TicketMutex::<_>::new(0);
+/// let lock = spin::mutex::TicketMutex::new(0);
 ///
 /// // Modify the data
 /// *lock.lock() = 2;
@@ -45,7 +36,7 @@ use crate::{RelaxStrategy, Spin};
 /// use std::sync::{Arc, Barrier};
 ///
 /// let thread_count = 1000;
-/// let spin_mutex = Arc::new(spin::mutex::TicketMutex::<_>::new(0));
+/// let spin_mutex = Arc::new(spin::mutex::TicketMutex::new(0));
 ///
 /// // We use a barrier to ensure the readout happens after all writing
 /// let barrier = Arc::new(Barrier::new(thread_count + 1));
@@ -68,11 +59,10 @@ use crate::{RelaxStrategy, Spin};
 /// let answer = { *spin_mutex.lock() };
 /// assert_eq!(answer, thread_count);
 /// ```
-pub struct TicketMutex<T: ?Sized, R = Spin> {
-    phantom: PhantomData<R>,
-    next_ticket: AtomicUsize,
-    next_serving: AtomicUsize,
-    data: UnsafeCell<T>,
+pub struct TicketMutex<T: ?Sized> {
+    pub(crate) next_ticket: AtomicUsize,
+    pub(crate) next_serving: AtomicUsize,
+    value: UnsafeCell<T>,
 }
 
 /// A guard that protects some data.
@@ -81,13 +71,13 @@ pub struct TicketMutex<T: ?Sized, R = Spin> {
 pub struct TicketMutexGuard<'a, T: ?Sized + 'a> {
     next_serving: &'a AtomicUsize,
     ticket: usize,
-    data: &'a mut T,
+    value: &'a mut T,
 }
 
 unsafe impl<T: ?Sized + Send> Sync for TicketMutex<T> {}
 unsafe impl<T: ?Sized + Send> Send for TicketMutex<T> {}
 
-impl<T, R> TicketMutex<T, R> {
+impl<T> TicketMutex<T> {
     /// Creates a new [`TicketMutex`] wrapping the supplied data.
     ///
     /// # Example
@@ -95,7 +85,7 @@ impl<T, R> TicketMutex<T, R> {
     /// ```
     /// use spin::mutex::TicketMutex;
     ///
-    /// static MUTEX: TicketMutex<()> = TicketMutex::<_>::new(());
+    /// static MUTEX: TicketMutex<()> = TicketMutex::new(());
     ///
     /// fn demo() {
     ///     let lock = MUTEX.lock();
@@ -104,12 +94,11 @@ impl<T, R> TicketMutex<T, R> {
     /// }
     /// ```
     #[inline(always)]
-    pub const fn new(data: T) -> Self {
+    pub const fn new(value: T) -> Self {
         Self {
-            phantom: PhantomData,
             next_ticket: AtomicUsize::new(0),
             next_serving: AtomicUsize::new(0),
-            data: UnsafeCell::new(data),
+            value: UnsafeCell::new(value),
         }
     }
 
@@ -118,41 +107,16 @@ impl<T, R> TicketMutex<T, R> {
     /// # Example
     ///
     /// ```
-    /// let lock = spin::mutex::TicketMutex::<_>::new(42);
+    /// let lock = spin::mutex::TicketMutex::new(42);
     /// assert_eq!(42, lock.into_inner());
     /// ```
     #[inline(always)]
     pub fn into_inner(self) -> T {
-        self.data.into_inner()
-    }
-    /// Returns a mutable pointer to the underying data.
-    ///
-    /// This is mostly meant to be used for applications which require manual unlocking, but where
-    /// storing both the lock and the pointer to the inner data gets inefficient.
-    ///
-    /// # Example
-    /// ```
-    /// let lock = spin::mutex::SpinMutex::<_>::new(42);
-    ///
-    /// unsafe {
-    ///     core::mem::forget(lock.lock());
-    ///     
-    ///     assert_eq!(lock.as_mut_ptr().read(), 42);
-    ///     lock.as_mut_ptr().write(58);
-    ///
-    ///     lock.force_unlock();
-    /// }
-    ///
-    /// assert_eq!(*lock.lock(), 58);
-    ///
-    /// ```
-    #[inline(always)]
-    pub fn as_mut_ptr(&self) -> *mut T {
-        self.data.get()
+        self.value.into_inner()
     }
 }
 
-impl<T: ?Sized + fmt::Debug, R> fmt::Debug for TicketMutex<T, R> {
+impl<T: ?Sized + fmt::Debug> fmt::Debug for TicketMutex<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.try_lock() {
             Some(guard) => write!(f, "Mutex {{ data: ")
@@ -163,14 +127,26 @@ impl<T: ?Sized + fmt::Debug, R> fmt::Debug for TicketMutex<T, R> {
     }
 }
 
-impl<T: ?Sized, R: RelaxStrategy> TicketMutex<T, R> {
+impl<T: ?Sized> TicketMutex<T> {
+    /// Returns `true` if the lock is currently held.
+    ///
+    /// # Safety
+    ///
+    /// This function provides no synchronization guarantees and so its result should be considered 'out of date'
+    /// the instant it is called. Do not use it for synchronization purposes. However, it may be useful as a heuristic.
+    #[inline(always)]
+    pub fn is_locked(&self) -> bool {
+        let ticket = self.next_ticket.load(Ordering::Relaxed);
+        self.next_serving.load(Ordering::Relaxed) != ticket
+    }
+
     /// Locks the [`TicketMutex`] and returns a guard that permits access to the inner data.
     ///
-    /// The returned data may be dereferenced for data access
+    /// The returned value may be dereferenced for data access
     /// and the lock will be dropped when the guard falls out of scope.
     ///
     /// ```
-    /// let lock = spin::mutex::TicketMutex::<_>::new(0);
+    /// let lock = spin::mutex::TicketMutex::new(0);
     /// {
     ///     let mut data = lock.lock();
     ///     // The lock is now locked and the data can be accessed
@@ -183,7 +159,7 @@ impl<T: ?Sized, R: RelaxStrategy> TicketMutex<T, R> {
         let ticket = self.next_ticket.fetch_add(1, Ordering::Relaxed);
 
         while self.next_serving.load(Ordering::Acquire) != ticket {
-            R::relax();
+            crate::relax();
         }
 
         TicketMutexGuard {
@@ -191,26 +167,12 @@ impl<T: ?Sized, R: RelaxStrategy> TicketMutex<T, R> {
             ticket,
             // Safety
             // We know that we are the next ticket to be served,
-            // so there's no other thread accessing the data.
+            // so there's no other thread accessing the value.
             //
             // Every other thread has another ticket number so it's
             // definitely stuck in the spin loop above.
-            data: unsafe { &mut *self.data.get() },
+            value: unsafe { &mut *self.value.get() },
         }
-    }
-}
-
-impl<T: ?Sized, R> TicketMutex<T, R> {
-    /// Returns `true` if the lock is currently held.
-    ///
-    /// # Safety
-    ///
-    /// This function provides no synchronization guarantees and so its result should be considered 'out of date'
-    /// the instant it is called. Do not use it for synchronization purposes. However, it may be useful as a heuristic.
-    #[inline(always)]
-    pub fn is_locked(&self) -> bool {
-        let ticket = self.next_ticket.load(Ordering::Relaxed);
-        self.next_serving.load(Ordering::Relaxed) != ticket
     }
 
     /// Force unlock this [`TicketMutex`], by serving the next ticket.
@@ -230,7 +192,7 @@ impl<T: ?Sized, R> TicketMutex<T, R> {
     /// # Example
     ///
     /// ```
-    /// let lock = spin::mutex::TicketMutex::<_>::new(42);
+    /// let lock = spin::mutex::TicketMutex::new(42);
     ///
     /// let maybe_guard = lock.try_lock();
     /// assert!(maybe_guard.is_some());
@@ -257,8 +219,8 @@ impl<T: ?Sized, R> TicketMutex<T, R> {
             // Safety
             // We have a ticket that is equal to the next_serving ticket, so we know:
             // - that no other thread can have the same ticket id as this thread
-            // - that we are the next one to be served so we have exclusive access to the data
-            data: unsafe { &mut *self.data.get() },
+            // - that we are the next one to be served so we have exclusive access to the value
+            value: unsafe { &mut *self.value.get() },
         })
     }
 
@@ -271,7 +233,7 @@ impl<T: ?Sized, R> TicketMutex<T, R> {
     /// # Example
     ///
     /// ```
-    /// let mut lock = spin::mutex::TicketMutex::<_>::new(0);
+    /// let mut lock = spin::mutex::TicketMutex::new(0);
     /// *lock.get_mut() = 10;
     /// assert_eq!(*lock.lock(), 10);
     /// ```
@@ -279,20 +241,20 @@ impl<T: ?Sized, R> TicketMutex<T, R> {
     pub fn get_mut(&mut self) -> &mut T {
         // Safety:
         // We know that there are no other references to `self`,
-        // so it's safe to return a exclusive reference to the data.
-        unsafe { &mut *self.data.get() }
+        // so it's safe to return a exclusive reference to the value.
+        unsafe { &mut *self.value.get() }
     }
 }
 
-impl<T: ?Sized + Default, R> Default for TicketMutex<T, R> {
-    fn default() -> Self {
-        Self::new(Default::default())
+impl<T: ?Sized + Default> Default for TicketMutex<T> {
+    fn default() -> TicketMutex<T> {
+        TicketMutex::new(Default::default())
     }
 }
 
-impl<T, R> From<T> for TicketMutex<T, R> {
-    fn from(data: T) -> Self {
-        Self::new(data)
+impl<T> From<T> for TicketMutex<T> {
+    fn from(value: T) -> Self {
+        Self::new(value)
     }
 }
 
@@ -302,7 +264,7 @@ impl<'a, T: ?Sized> TicketMutexGuard<'a, T> {
     /// Note that this function will permanently lock the original [`TicketMutex`].
     ///
     /// ```
-    /// let mylock = spin::mutex::TicketMutex::<_>::new(0);
+    /// let mylock = spin::mutex::TicketMutex::new(0);
     ///
     /// let data: &mut i32 = spin::mutex::TicketMutexGuard::leak(mylock.lock());
     ///
@@ -311,7 +273,7 @@ impl<'a, T: ?Sized> TicketMutexGuard<'a, T> {
     /// ```
     #[inline(always)]
     pub fn leak(this: Self) -> &'a mut T {
-        let data = this.data as *mut _; // Keep it in pointer form temporarily to avoid double-aliasing
+        let data = this.value as *mut _; // Keep it in pointer form temporarily to avoid double-aliasing
         core::mem::forget(this);
         unsafe { &mut *data }
     }
@@ -332,13 +294,13 @@ impl<'a, T: ?Sized + fmt::Display> fmt::Display for TicketMutexGuard<'a, T> {
 impl<'a, T: ?Sized> Deref for TicketMutexGuard<'a, T> {
     type Target = T;
     fn deref(&self) -> &T {
-        self.data
+        self.value
     }
 }
 
 impl<'a, T: ?Sized> DerefMut for TicketMutexGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut T {
-        self.data
+        self.value
     }
 }
 
@@ -346,31 +308,6 @@ impl<'a, T: ?Sized> Drop for TicketMutexGuard<'a, T> {
     fn drop(&mut self) {
         let new_ticket = self.ticket + 1;
         self.next_serving.store(new_ticket, Ordering::Release);
-    }
-}
-
-#[cfg(feature = "lock_api")]
-unsafe impl<R: RelaxStrategy> lock_api_crate::RawMutex for TicketMutex<(), R> {
-    type GuardMarker = lock_api_crate::GuardSend;
-
-    const INIT: Self = Self::new(());
-
-    fn lock(&self) {
-        // Prevent guard destructor running
-        core::mem::forget(Self::lock(self));
-    }
-
-    fn try_lock(&self) -> bool {
-        // Prevent guard destructor running
-        Self::try_lock(self).map(core::mem::forget).is_some()
-    }
-
-    unsafe fn unlock(&self) {
-        self.force_unlock();
-    }
-
-    fn is_locked(&self) -> bool {
-        Self::is_locked(self)
     }
 }
 
@@ -383,21 +320,21 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
-    type TicketMutex<T> = super::TicketMutex<T>;
+    use super::*;
 
     #[derive(Eq, PartialEq, Debug)]
     struct NonCopy(i32);
 
     #[test]
     fn smoke() {
-        let m = TicketMutex::<_>::new(());
+        let m = TicketMutex::new(());
         drop(m.lock());
         drop(m.lock());
     }
 
     #[test]
     fn lots_and_lots() {
-        static M: TicketMutex<()> = TicketMutex::<_>::new(());
+        static M: TicketMutex<()> = TicketMutex::new(());
         static mut CNT: u32 = 0;
         const J: u32 = 1000;
         const K: u32 = 3;
@@ -434,7 +371,7 @@ mod tests {
 
     #[test]
     fn try_lock() {
-        let mutex = TicketMutex::<_>::new(42);
+        let mutex = TicketMutex::new(42);
 
         // First lock succeeds
         let a = mutex.try_lock();
@@ -452,7 +389,7 @@ mod tests {
 
     #[test]
     fn test_into_inner() {
-        let m = TicketMutex::<_>::new(NonCopy(10));
+        let m = TicketMutex::new(NonCopy(10));
         assert_eq!(m.into_inner(), NonCopy(10));
     }
 
@@ -465,7 +402,7 @@ mod tests {
             }
         }
         let num_drops = Arc::new(AtomicUsize::new(0));
-        let m = TicketMutex::<_>::new(Foo(num_drops.clone()));
+        let m = TicketMutex::new(Foo(num_drops.clone()));
         assert_eq!(num_drops.load(Ordering::SeqCst), 0);
         {
             let _inner = m.into_inner();
@@ -478,8 +415,8 @@ mod tests {
     fn test_mutex_arc_nested() {
         // Tests nested mutexes and access
         // to underlying data.
-        let arc = Arc::new(TicketMutex::<_>::new(1));
-        let arc2 = Arc::new(TicketMutex::<_>::new(arc));
+        let arc = Arc::new(TicketMutex::new(1));
+        let arc2 = Arc::new(TicketMutex::new(arc));
         let (tx, rx) = channel();
         let _t = thread::spawn(move || {
             let lock = arc2.lock();
@@ -493,7 +430,7 @@ mod tests {
     #[test]
     #[ignore = "Android uses panic_abort"]
     fn test_mutex_arc_access_in_unwind() {
-        let arc = Arc::new(TicketMutex::<_>::new(1));
+        let arc = Arc::new(TicketMutex::new(1));
         let arc2 = arc.clone();
         let _ = thread::spawn(move || -> () {
             struct Unwinder {
@@ -514,7 +451,7 @@ mod tests {
 
     #[test]
     fn test_mutex_unsized() {
-        let mutex: &TicketMutex<[i32]> = &TicketMutex::<_>::new([1, 2, 3]);
+        let mutex: &TicketMutex<[i32]> = &TicketMutex::new([1, 2, 3]);
         {
             let b = &mut *mutex.lock();
             b[0] = 4;
@@ -526,7 +463,7 @@ mod tests {
 
     #[test]
     fn is_locked() {
-        let mutex = TicketMutex::<_>::new(());
+        let mutex = TicketMutex::new(());
         assert!(!mutex.is_locked());
         let lock = mutex.lock();
         assert!(mutex.is_locked());
