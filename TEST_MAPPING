@@ -14,23 +14,9 @@
       "path": "external/rust/crates/webpki"
     }
   ],
-  "postsubmit": [
-    {
-      "name": "doh_unit_test"
-    },
-    {
-      "name": "microdroid_manager_test"
-    },
-    {
-      "name": "spin_test_src_lib"
-    }
-  ],
   "presubmit": [
     {
       "name": "doh_unit_test"
-    },
-    {
-      "name": "microdroid_manager_test"
     },
     {
       "name": "spin_test_src_lib"
@@ -39,9 +25,6 @@
   "presubmit-rust": [
     {
       "name": "doh_unit_test"
-    },
-    {
-      "name": "microdroid_manager_test"
     },
     {
       "name": "spin_test_src_lib"
