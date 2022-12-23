@@ -9,13 +9,10 @@ use core::{
     cell::UnsafeCell,
     fmt,
     ops::{Deref, DerefMut},
+    sync::atomic::{AtomicUsize, Ordering},
     marker::PhantomData,
 };
-use crate::{
-    atomic::{AtomicUsize, Ordering},
-    RelaxStrategy, Spin
-};
-
+use crate::{RelaxStrategy, Spin};
 
 /// A spin-based [ticket lock](https://en.wikipedia.org/wiki/Ticket_lock) providing mutually exclusive access to data.
 ///
@@ -87,8 +84,8 @@ pub struct TicketMutexGuard<'a, T: ?Sized + 'a> {
     data: &'a mut T,
 }
 
-unsafe impl<T: ?Sized + Send, R> Sync for TicketMutex<T, R> {}
-unsafe impl<T: ?Sized + Send, R> Send for TicketMutex<T, R> {}
+unsafe impl<T: ?Sized + Send> Sync for TicketMutex<T> {}
+unsafe impl<T: ?Sized + Send> Send for TicketMutex<T> {}
 
 impl<T, R> TicketMutex<T, R> {
     /// Creates a new [`TicketMutex`] wrapping the supplied data.
@@ -139,7 +136,7 @@ impl<T, R> TicketMutex<T, R> {
     ///
     /// unsafe {
     ///     core::mem::forget(lock.lock());
-    ///
+    ///     
     ///     assert_eq!(lock.as_mut_ptr().read(), 42);
     ///     lock.as_mut_ptr().write(58);
     ///

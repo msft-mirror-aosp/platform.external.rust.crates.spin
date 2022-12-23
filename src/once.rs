@@ -3,14 +3,11 @@
 use core::{
     cell::UnsafeCell,
     mem::MaybeUninit,
+    sync::atomic::{AtomicU8, Ordering},
     marker::PhantomData,
     fmt,
 };
-use crate::{
-    atomic::{AtomicU8, Ordering},
-    RelaxStrategy, Spin
-};
-
+use crate::{RelaxStrategy, Spin};
 
 /// A primitive that provides lazy one-time initialization.
 ///
@@ -35,10 +32,6 @@ pub struct Once<T = (), R = Spin> {
     phantom: PhantomData<R>,
     status: AtomicStatus,
     data: UnsafeCell<MaybeUninit<T>>,
-}
-
-impl<T, R> Default for Once<T, R> {
-    fn default() -> Self { Self::new() }
 }
 
 impl<T: fmt::Debug, R> fmt::Debug for Once<T, R> {
@@ -113,7 +106,7 @@ mod status {
                 // that both Ok(_) and Err(_) will be safely transmutable.
 
                 Ok(ok) => Ok(unsafe { Status::new_unchecked(ok) }),
-                Err(err) => Err(unsafe { Status::new_unchecked(err) }),
+                Err(err) => Ok(unsafe { Status::new_unchecked(err) }),
             }
         }
         #[inline(always)]
@@ -164,46 +157,6 @@ impl<T, R: RelaxStrategy> Once<T, R> {
     /// }
     /// ```
     pub fn call_once<F: FnOnce() -> T>(&self, f: F) -> &T {
-        match self.try_call_once(|| Ok::<T, core::convert::Infallible>(f())) {
-            Ok(x) => x,
-            Err(void) => match void {},
-        }
-    }
-
-    /// This method is similar to `call_once`, but allows the given closure to
-    /// fail, and lets the `Once` in a uninitialized state if it does.
-    ///
-    /// This method will block the calling thread if another initialization
-    /// routine is currently running.
-    ///
-    /// When this function returns without error, it is guaranteed that some
-    /// initialization has run and completed (it may not be the closure
-    /// specified). The returned reference will point to the result from the
-    /// closure that was run.
-    ///
-    /// # Panics
-    ///
-    /// This function will panic if the [`Once`] previously panicked while attempting
-    /// to initialize. This is similar to the poisoning behaviour of `std::sync`'s
-    /// primitives.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use spin;
-    ///
-    /// static INIT: spin::Once<usize> = spin::Once::new();
-    ///
-    /// fn get_cached_val() -> Result<usize, String> {
-    ///     INIT.try_call_once(expensive_fallible_computation).map(|x| *x)
-    /// }
-    ///
-    /// fn expensive_fallible_computation() -> Result<usize, String> {
-    ///     // ...
-    /// # Ok(2)
-    /// }
-    /// ```
-    pub fn try_call_once<F: FnOnce() -> Result<T, E>, E>(&self, f: F) -> Result<&T, E> {
         // SAFETY: We perform an Acquire load because if this were to return COMPLETE, then we need
         // the preceding stores done while initializing, to become visible after this load.
         let mut status = self.status.load(Ordering::Acquire);
@@ -232,21 +185,12 @@ impl<T, R: RelaxStrategy> Once<T, R> {
 
                     // We use a guard (Finish) to catch panics caused by builder
                     let finish = Finish { status: &self.status };
-                    let val = match f() {
-                        Ok(val) => val,
-                        Err(err) => {
-                            // If an error occurs, clean up everything and leave.
-                            core::mem::forget(finish);
-                            self.status.store(Status::Incomplete, Ordering::Release);
-                            return Err(err);
-                        }
-                    };
                     unsafe {
                         // SAFETY:
                         // `UnsafeCell`/deref: currently the only accessor, mutably
                         // and immutably by cas exclusion.
                         // `write`: pointer comes from `MaybeUninit`.
-                        (*self.data.get()).as_mut_ptr().write(val);
+                        (*self.data.get()).as_mut_ptr().write(f())
                     };
                     // If there were to be a panic with unwind enabled, the code would
                     // short-circuit and never reach the point where it writes the inner data.
@@ -270,7 +214,7 @@ impl<T, R: RelaxStrategy> Once<T, R> {
                     self.status.store(Status::Complete, Ordering::Release);
 
                     // This next line is mainly an optimization.
-                    return unsafe { Ok(self.force_get()) };
+                    return unsafe { self.force_get() };
                 }
                 // The compare-exchange failed, so we know for a fact that the status cannot be
                 // INCOMPLETE, or it would have succeeded.
@@ -278,7 +222,7 @@ impl<T, R: RelaxStrategy> Once<T, R> {
             }
         }
 
-        Ok(match status {
+        match status {
             // SAFETY: We have either checked with an Acquire load, that the status is COMPLETE, or
             // initialized it ourselves, in which case no additional synchronization is needed.
             Status::Complete => unsafe { self.force_get() },
@@ -308,7 +252,8 @@ impl<T, R: RelaxStrategy> Once<T, R> {
             // which case we know for a fact that the state cannot be changed back to INCOMPLETE as
             // `Once`s are monotonic.
             Status::Incomplete => unsafe { unreachable() },
-        })
+        }
+
     }
 
     /// Spins until the [`Once`] contains a value.
@@ -656,11 +601,8 @@ mod tests {
         }
     }
 
-    // This is sort of two test cases, but if we write them as separate test methods
-    // they can be executed concurrently and then fail some small fraction of the
-    // time.
     #[test]
-    fn drop_occurs_and_skip_uninit_drop() {
+    fn drop_occurs() {
         unsafe {
             CALLED = false;
         }
@@ -673,7 +615,10 @@ mod tests {
         assert!(unsafe {
             CALLED
         });
-        // Now test that we skip drops for the uninitialized case.
+    }
+
+    #[test]
+    fn skip_uninit_drop() {
         unsafe {
             CALLED = false;
         }
@@ -684,34 +629,5 @@ mod tests {
         assert!(unsafe {
             !CALLED
         });
-    }
-
-    #[test]
-    fn call_once_test() {
-        for _ in 0..20 {
-            use std::sync::Arc;
-            use std::sync::atomic::AtomicUsize;
-            use std::time::Duration;
-            let share = Arc::new(AtomicUsize::new(0));
-            let once = Arc::new(Once::<_, Spin>::new());
-            let mut hs = Vec::new();
-            for _ in 0..8 {
-                let h = thread::spawn({
-                    let share = share.clone();
-                    let once = once.clone();
-                    move || {
-                        thread::sleep(Duration::from_millis(10));
-                        once.call_once(|| {
-                            share.fetch_add(1, Ordering::SeqCst);
-                        });
-                    }
-                });
-                hs.push(h);
-            }
-            for h in hs {
-                let _ = h.join();
-            }
-            assert_eq!(1, share.load(Ordering::SeqCst));
-        }
     }
 }
