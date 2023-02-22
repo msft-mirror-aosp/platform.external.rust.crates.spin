@@ -1,6 +1,6 @@
 [package]
 name = "spin"
-version = "0.9.4"
+version = "0.9.5"
 authors = [
     "Mathijs van de Nes <git@mathijs.vd-nes.nl>",
     "John Ericson <git@JohnEricson.me>",
@@ -10,6 +10,7 @@ license = "MIT"
 repository = "https://github.com/mvdnes/spin-rs.git"
 keywords = ["spinlock", "mutex", "rwlock"]
 description = "Spin-based synchronization primitives"
+rust-version = "1.38"
 
 [dependencies]
 lock_api_crate = { package = "lock_api", version = "0.4", optional = true }
@@ -26,6 +27,9 @@ spin_mutex = ["mutex"]
 
 # Enables `TicketMutex`.
 ticket_mutex = ["mutex"]
+
+# Enables `FairMutex`.
+fair_mutex = ["mutex"]
 
 # Enables the non-default ticket mutex implementation for `Mutex`.
 use_ticket_mutex = ["mutex", "ticket_mutex"]
