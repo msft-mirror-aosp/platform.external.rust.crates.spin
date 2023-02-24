@@ -10,8 +10,9 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
+rust-version = "1.38"
 name = "spin"
-version = "0.9.4"
+version = "0.9.5"
 authors = [
     "Mathijs van de Nes <git@mathijs.vd-nes.nl>",
     "John Ericson <git@JohnEricson.me>",
@@ -55,6 +56,7 @@ default = [
     "lazy",
     "barrier",
 ]
+fair_mutex = ["mutex"]
 lazy = ["once"]
 lock_api = ["lock_api_crate"]
 mutex = []
