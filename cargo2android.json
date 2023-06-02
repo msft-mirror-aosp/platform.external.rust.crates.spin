@@ -1,15 +1,20 @@
 {
-  "add-toplevel-block": "cargo2android_nostd.bp",
-  "apex-available": [
-    "//apex_available:platform",
-    "com.android.compos",
-    "com.android.resolv",
-    "com.android.virt"
-  ],
   "dependencies": true,
   "device": true,
-  "features": "once,std",
+  "ignore-cargo-errors": true,
   "min-sdk-version": "29",
   "run": true,
-  "tests": true
+  "variants": [
+    {
+      "features": "once,std",
+      "tests": true
+    },
+    {
+      "features": "mutex,spin_mutex",
+      "force-rlib": true,
+      "no-host": true,
+      "suffix": "_nostd",
+      "no-std": true
+    }
+  ]
 }
