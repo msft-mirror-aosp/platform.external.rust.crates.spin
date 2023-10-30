@@ -61,6 +61,7 @@ rust_library_rlib {
     edition: "2015",
     features: [
         "mutex",
+        "once",
         "spin_mutex",
     ],
     apex_available: [

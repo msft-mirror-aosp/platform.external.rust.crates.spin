@@ -10,7 +10,7 @@
       "tests": true
     },
     {
-      "features": "mutex,spin_mutex",
+      "features": "once,mutex,spin_mutex",
       "force-rlib": true,
       "no-host": true,
       "suffix": "_nostd",
