@@ -5,6 +5,8 @@
     {
       "features": [
         "once",
+        "mutex",
+        "spin_mutex",
         "std"
       ],
       "tests": true
