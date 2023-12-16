@@ -40,7 +40,9 @@ rust_library {
     srcs: ["src/lib.rs"],
     edition: "2015",
     features: [
+        "mutex",
         "once",
+        "spin_mutex",
         "std",
     ],
     apex_available: [
@@ -66,7 +68,9 @@ rust_test {
     },
     edition: "2015",
     features: [
+        "mutex",
         "once",
+        "spin_mutex",
         "std",
     ],
     rustlibs: ["libcriterion"],
