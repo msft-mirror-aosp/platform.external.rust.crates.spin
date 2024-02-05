@@ -36,7 +36,7 @@ rust_library {
     host_supported: true,
     crate_name: "spin",
     cargo_env_compat: true,
-    cargo_pkg_version: "0.9.7",
+    cargo_pkg_version: "0.9.8",
     srcs: ["src/lib.rs"],
     edition: "2015",
     features: [
@@ -59,7 +59,7 @@ rust_test {
     host_supported: true,
     crate_name: "spin",
     cargo_env_compat: true,
-    cargo_pkg_version: "0.9.7",
+    cargo_pkg_version: "0.9.8",
     srcs: ["src/lib.rs"],
     test_suites: ["general-tests"],
     auto_gen_config: true,
@@ -80,7 +80,7 @@ rust_library_rlib {
     name: "libspin_nostd",
     crate_name: "spin",
     cargo_env_compat: true,
-    cargo_pkg_version: "0.9.7",
+    cargo_pkg_version: "0.9.8",
     srcs: ["src/lib.rs"],
     edition: "2015",
     features: [
