@@ -27,6 +27,17 @@
           "no_std": true
         }
       }
+    },
+    {
+      "generate_androidbp": false,
+      "generate_rulesmk": true,
+      "features": [
+      ],
+      "package": {
+        "spin": {
+          "no_std": true
+        }
+      }
     }
   ]
 }
